@@ -5,8 +5,8 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.models import Alert
-from ..schemas.schemas import AlertCreate, AlertOut, SubscriptionCreate, SubscriptionOut
-from ..core.events import register_subscription, remove_subscription, publish_event, get_subscriptions
+from ..schemas.schemas import AlertCreate, AlertOut, SubscriptionCreate, SubscriptionOut, DeliveryLogOut
+from ..core.events import register_subscription, remove_subscription, publish_event, get_subscriptions, get_delivery_log
 
 
 async def create_alert(db: AsyncSession, data: AlertCreate) -> Alert:
@@ -114,4 +114,20 @@ def list_subscriptions() -> list[SubscriptionOut]:
             callback_url=sub["callback_url"],
         )
         for sub_id, sub in subs.items()
+    ]
+
+
+def list_delivery_log(subscriber_id: str = None, limit: int = 50) -> list[DeliveryLogOut]:
+    logs = get_delivery_log(subscriber_id=subscriber_id, limit=limit)
+    return [
+        DeliveryLogOut(
+            subscriber_id=l["subscriber_id"],
+            callback_url=l["callback_url"],
+            event_type=l["event_type"],
+            success=l["success"],
+            status_code=l.get("status_code"),
+            error=l.get("error"),
+            timestamp=l["timestamp"],
+        )
+        for l in logs
     ]

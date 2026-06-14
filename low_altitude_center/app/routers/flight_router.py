@@ -25,6 +25,8 @@ async def report_position(
         msg = str(e)
         if "not found" in msg:
             raise HTTPException(status_code=404, detail=msg)
+        if "currently" in msg:
+            raise HTTPException(status_code=400, detail=msg)
         raise HTTPException(status_code=400, detail=msg)
 
 
@@ -50,6 +52,8 @@ async def record_event(
         msg = str(e)
         if "not found" in msg:
             raise HTTPException(status_code=404, detail=msg)
+        if "currently" in msg:
+            raise HTTPException(status_code=400, detail=msg)
         raise HTTPException(status_code=400, detail=msg)
 
 

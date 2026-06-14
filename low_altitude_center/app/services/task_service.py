@@ -4,9 +4,45 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import async_session
-from ..models.models import Task
+from ..models.models import Task, Device
 from ..schemas.schemas import TaskCreate, TaskUpdate, TaskMergeRequest
 from ..core.events import publish_event
+
+VALID_TRANSITIONS = {
+    "draft": ["planned", "cancelled"],
+    "planned": ["approved", "cancelled"],
+    "approved": ["in_progress", "cancelled"],
+    "in_progress": ["completed", "cancelled"],
+    "completed": [],
+    "cancelled": [],
+}
+
+
+async def _transition_status(db: AsyncSession, task: Task, new_status: str) -> Task:
+    old_status = task.status
+    if new_status == old_status:
+        return task
+    allowed = VALID_TRANSITIONS.get(old_status, [])
+    if new_status not in allowed:
+        raise ValueError(
+            f"Cannot transition task from '{old_status}' to '{new_status}'. "
+            f"Allowed transitions: {allowed}"
+        )
+    task.status = new_status
+    await db.commit()
+    await db.refresh(task)
+
+    await publish_event(
+        event_type="task.status_changed",
+        payload={
+            "task_id": task.id,
+            "old_status": old_status,
+            "new_status": new_status,
+            "name": task.name,
+        },
+    )
+
+    return task
 
 
 async def create_task(db: AsyncSession, task_data: TaskCreate) -> Task:
@@ -68,27 +104,30 @@ async def cancel_task(db: AsyncSession, task_id: int) -> Optional[Task]:
     task = await get_task(db, task_id)
     if task is None:
         return None
-    if task.status not in ("draft", "planned", "approved"):
-        raise ValueError(
-            f"Cannot cancel task with status '{task.status}'. "
-            "Only tasks with status draft, planned, or approved can be cancelled."
-        )
-    old_status = task.status
-    task.status = "cancelled"
-    await db.commit()
-    await db.refresh(task)
+    return await _transition_status(db, task, "cancelled")
 
-    await publish_event(
-        event_type="task.status_changed",
-        payload={
-            "task_id": task.id,
-            "old_status": old_status,
-            "new_status": "cancelled",
-            "name": task.name,
-        },
+
+async def start_task(db: AsyncSession, task_id: int) -> Optional[Task]:
+    task = await get_task(db, task_id)
+    if task is None:
+        return None
+    if task.status == "approved":
+        return await _transition_status(db, task, "in_progress")
+    if task.status in ("draft", "planned"):
+        await _transition_status(db, task, "planned")
+        await _transition_status(db, task, "approved")
+        return await _transition_status(db, task, "in_progress")
+    raise ValueError(
+        f"Cannot start task with status '{task.status}'. "
+        "Task must be in draft, planned, or approved status."
     )
 
-    return task
+
+async def complete_task(db: AsyncSession, task_id: int) -> Optional[Task]:
+    task = await get_task(db, task_id)
+    if task is None:
+        return None
+    return await _transition_status(db, task, "completed")
 
 
 async def merge_tasks(db: AsyncSession, merge_req: TaskMergeRequest) -> Task:
@@ -124,6 +163,27 @@ async def assign_pilot_and_drone(
     task = await get_task(db, task_id)
     if task is None:
         return None
+
+    drone_result = await db.execute(select(Device).where(Device.id == drone_id))
+    drone = drone_result.scalars().first()
+    if drone is None:
+        raise ValueError(f"Device with id {drone_id} not found")
+    if drone.status in ("disabled", "maintenance"):
+        raise ValueError(
+            f"Device '{drone.name}' (id={drone_id}) is currently '{drone.status}' "
+            "and cannot be assigned to a task"
+        )
+
+    pilot_result = await db.execute(select(Device).where(Device.id == pilot_id))
+    pilot = pilot_result.scalars().first()
+    if pilot is None:
+        raise ValueError(f"Device with id {pilot_id} not found")
+    if pilot.status in ("disabled", "maintenance"):
+        raise ValueError(
+            f"Device '{pilot.name}' (id={pilot_id}) is currently '{pilot.status}' "
+            "and cannot be assigned to a task"
+        )
+
     task.pilot_id = pilot_id
     task.drone_id = drone_id
     await db.commit()

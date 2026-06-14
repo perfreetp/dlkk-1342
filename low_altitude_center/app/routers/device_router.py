@@ -11,6 +11,8 @@ from app.schemas.schemas import (
     MaintenanceRecordCreate,
     MaintenanceRecordOut,
     UtilizationStat,
+    TaskFlightSummary,
+    DailyFlightSummary,
 )
 
 router = APIRouter(prefix="/api/v1/devices", tags=["设备管理"])
@@ -74,6 +76,48 @@ async def get_utilization_stats(
         )
 
     return await device_service.get_utilization_stats(
+        db, device_id=device_id, start_date=start_dt, end_date=end_dt
+    )
+
+
+@router.get("/flight-summary/by-task", response_model=list[TaskFlightSummary])
+async def get_task_flight_summaries(
+    device_id: int | None = None,
+    task_id: int | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    return await device_service.get_task_flight_summaries(
+        db, device_id=device_id, task_id=task_id
+    )
+
+
+@router.get("/flight-summary/by-day", response_model=list[DailyFlightSummary])
+async def get_daily_flight_summaries(
+    device_id: int | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    start_dt = None
+    end_dt = None
+
+    if start_date:
+        try:
+            start_dt = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
+            if start_dt.tzinfo is None:
+                start_dt = start_dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid start_date format")
+
+    if end_date:
+        try:
+            end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid end_date format")
+
+    return await device_service.get_daily_flight_summaries(
         db, device_id=device_id, start_date=start_dt, end_date=end_dt
     )
 

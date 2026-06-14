@@ -283,6 +283,16 @@ class SubscriptionOut(BaseModel):
     callback_url: str
 
 
+class DeliveryLogOut(BaseModel):
+    subscriber_id: str
+    callback_url: str
+    event_type: str
+    success: bool
+    status_code: Optional[int] = None
+    error: Optional[str] = None
+    timestamp: str
+
+
 class MediaFileCreate(BaseModel):
     task_id: Optional[int] = None
     file_type: str
@@ -352,6 +362,31 @@ class UtilizationStat(BaseModel):
     utilization_rate: float
     period_start: datetime
     period_end: datetime
+
+
+class TaskFlightSummary(BaseModel):
+    task_id: int
+    task_name: str
+    device_id: int
+    device_name: str
+    flight_count: int
+    total_flight_hours: float
+    min_latitude: Optional[float] = None
+    max_latitude: Optional[float] = None
+    min_longitude: Optional[float] = None
+    max_longitude: Optional[float] = None
+
+
+class DailyFlightSummary(BaseModel):
+    date: str
+    device_id: int
+    device_name: str
+    flight_count: int
+    total_flight_hours: float
+    min_latitude: Optional[float] = None
+    max_latitude: Optional[float] = None
+    min_longitude: Optional[float] = None
+    max_longitude: Optional[float] = None
 
 
 class TrajectoryPoint(BaseModel):

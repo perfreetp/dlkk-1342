@@ -14,6 +14,7 @@ from ..schemas.schemas import (
     TrajectoryPoint,
 )
 from ..core.events import publish_event
+from ..services.task_service import _transition_status
 
 
 LOW_BATTERY_THRESHOLD = 20.0
@@ -110,6 +111,11 @@ async def report_position(db: AsyncSession, data: FlightPositionCreate) -> Fligh
     device = device_result.scalars().first()
     if device is None:
         raise ValueError(f"Device with id {data.device_id} not found")
+    if device.status in ("disabled", "maintenance"):
+        raise ValueError(
+            f"Device '{device.name}' (id={data.device_id}) is currently '{device.status}' "
+            "and cannot report flight data"
+        )
 
     task = None
     if data.task_id is not None:
@@ -171,6 +177,11 @@ async def record_event(db: AsyncSession, data: FlightEventCreate) -> FlightEvent
     device = device_result.scalars().first()
     if device is None:
         raise ValueError(f"Device with id {data.device_id} not found")
+    if device.status in ("disabled", "maintenance"):
+        raise ValueError(
+            f"Device '{device.name}' (id={data.device_id}) is currently '{device.status}' "
+            "and cannot report flight events"
+        )
 
     task = None
     if data.task_id is not None:
@@ -193,8 +204,23 @@ async def record_event(db: AsyncSession, data: FlightEventCreate) -> FlightEvent
     now = datetime.now(timezone.utc)
     if data.event_type == "takeoff" and task is not None:
         task.actual_start = now
+        if task.status in ("draft", "planned", "approved"):
+            try:
+                if task.status == "draft":
+                    await _transition_status(db, task, "planned")
+                if task.status == "planned":
+                    await _transition_status(db, task, "approved")
+                if task.status == "approved":
+                    await _transition_status(db, task, "in_progress")
+            except ValueError:
+                pass
     elif data.event_type in ("landing", "return_home") and task is not None:
         task.actual_end = now
+        if task.status == "in_progress":
+            try:
+                await _transition_status(db, task, "completed")
+            except ValueError:
+                pass
 
     await db.commit()
     await db.refresh(event)

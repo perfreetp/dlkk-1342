@@ -52,6 +52,28 @@ async def cancel_task(task_id: int, db: AsyncSession = Depends(get_db)):
     return task
 
 
+@router.post("/{task_id}/start", response_model=TaskOut)
+async def start_task(task_id: int, db: AsyncSession = Depends(get_db)):
+    try:
+        task = await task_service.start_task(db, task_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+
+@router.post("/{task_id}/complete", response_model=TaskOut)
+async def complete_task(task_id: int, db: AsyncSession = Depends(get_db)):
+    try:
+        task = await task_service.complete_task(db, task_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+
 @router.post("/merge", response_model=TaskOut)
 async def merge_tasks(merge_in: TaskMergeRequest, db: AsyncSession = Depends(get_db)):
     return await task_service.merge_tasks(db, merge_in)
@@ -64,7 +86,13 @@ async def assign_task(
     drone_id: int = Query(...),
     db: AsyncSession = Depends(get_db),
 ):
-    task = await task_service.assign_pilot_and_drone(db, task_id, pilot_id=pilot_id, drone_id=drone_id)
+    try:
+        task = await task_service.assign_pilot_and_drone(db, task_id, pilot_id=pilot_id, drone_id=drone_id)
+    except ValueError as e:
+        msg = str(e)
+        if "not found" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return task

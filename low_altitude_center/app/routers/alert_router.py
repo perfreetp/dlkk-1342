@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.services import alert_service
-from app.schemas.schemas import AlertCreate, AlertOut, SubscriptionCreate, SubscriptionOut
+from app.schemas.schemas import AlertCreate, AlertOut, SubscriptionCreate, SubscriptionOut, DeliveryLogOut
 
 router = APIRouter(prefix="/api/v1/alerts", tags=["告警管理"])
 
@@ -41,6 +41,14 @@ async def unsubscribe(subscriber_id: str):
 @router.get("/subscriptions", response_model=list[SubscriptionOut])
 async def list_subscriptions():
     return alert_service.list_subscriptions()
+
+
+@router.get("/delivery-log", response_model=list[DeliveryLogOut])
+async def get_delivery_log(
+    subscriber_id: str | None = None,
+    limit: int = Query(50, ge=1, le=200),
+):
+    return alert_service.list_delivery_log(subscriber_id=subscriber_id, limit=limit)
 
 
 @router.get("/{alert_id}", response_model=AlertOut)

@@ -4,12 +4,14 @@ from typing import Optional
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models.models import Device, MaintenanceRecord, FlightEvent
+from ..models.models import Device, MaintenanceRecord, FlightEvent, Task, FlightPosition
 from ..schemas.schemas import (
     DeviceCreate,
     DeviceUpdate,
     MaintenanceRecordCreate,
     UtilizationStat,
+    TaskFlightSummary,
+    DailyFlightSummary,
 )
 
 
@@ -196,3 +198,193 @@ async def get_utilization_stats(
         )
 
     return stats
+
+
+async def get_task_flight_summaries(
+    db: AsyncSession,
+    device_id: int = None,
+    task_id: int = None,
+) -> list[TaskFlightSummary]:
+    query = (
+        select(
+            FlightEvent.task_id,
+            FlightEvent.device_id,
+            Task.name.label("task_name"),
+            Device.name.label("device_name"),
+            func.count(FlightEvent.id).label("event_count"),
+        )
+        .join(Task, FlightEvent.task_id == Task.id, isouter=True)
+        .join(Device, FlightEvent.device_id == Device.id)
+        .where(FlightEvent.event_type == "takeoff")
+        .group_by(FlightEvent.task_id, FlightEvent.device_id)
+    )
+
+    if device_id is not None:
+        query = query.where(FlightEvent.device_id == device_id)
+    if task_id is not None:
+        query = query.where(FlightEvent.task_id == task_id)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    summaries = []
+    for row in rows:
+        tid = row.task_id
+        did = row.device_id
+        flight_count = row.event_count
+
+        takeoffs_q = await db.execute(
+            select(FlightEvent)
+            .where(
+                and_(
+                    FlightEvent.device_id == did,
+                    FlightEvent.task_id == tid,
+                    FlightEvent.event_type == "takeoff",
+                )
+            )
+            .order_by(FlightEvent.timestamp.asc())
+        )
+        takeoffs = list(takeoffs_q.scalars().all())
+
+        landings_q = await db.execute(
+            select(FlightEvent)
+            .where(
+                and_(
+                    FlightEvent.device_id == did,
+                    FlightEvent.task_id == tid,
+                    FlightEvent.event_type.in_(["landing", "return_home"]),
+                )
+            )
+            .order_by(FlightEvent.timestamp.asc())
+        )
+        landings = list(landings_q.scalars().all())
+
+        total_hours = 0.0
+        pairs = min(len(takeoffs), len(landings))
+        for i in range(pairs):
+            dur = (landings[i].timestamp - takeoffs[i].timestamp).total_seconds()
+            if dur > 0:
+                total_hours += dur / 3600.0
+
+        pos_q = await db.execute(
+            select(
+                func.min(FlightPosition.latitude).label("min_lat"),
+                func.max(FlightPosition.latitude).label("max_lat"),
+                func.min(FlightPosition.longitude).label("min_lon"),
+                func.max(FlightPosition.longitude).label("max_lon"),
+            ).where(
+                and_(
+                    FlightPosition.device_id == did,
+                    FlightPosition.task_id == tid,
+                )
+            )
+        )
+        bounds = pos_q.first()
+
+        summaries.append(
+            TaskFlightSummary(
+                task_id=tid or 0,
+                task_name=row.task_name or "",
+                device_id=did,
+                device_name=row.device_name,
+                flight_count=flight_count,
+                total_flight_hours=round(total_hours, 4),
+                min_latitude=bounds.min_lat if bounds and bounds.min_lat else None,
+                max_latitude=bounds.max_lat if bounds and bounds.max_lat else None,
+                min_longitude=bounds.min_lon if bounds and bounds.min_lon else None,
+                max_longitude=bounds.max_lon if bounds and bounds.max_lon else None,
+            )
+        )
+
+    return summaries
+
+
+async def get_daily_flight_summaries(
+    db: AsyncSession,
+    device_id: int = None,
+    start_date: datetime = None,
+    end_date: datetime = None,
+) -> list[DailyFlightSummary]:
+    now = datetime.now(timezone.utc)
+    if start_date is None:
+        start_date = now - timedelta(days=30)
+    if end_date is None:
+        end_date = now
+
+    start_naive = start_date.replace(tzinfo=None) if start_date.tzinfo else start_date
+    end_naive = end_date.replace(tzinfo=None) if end_date.tzinfo else end_date
+
+    device_query = select(Device)
+    if device_id is not None:
+        device_query = device_query.where(Device.id == device_id)
+    device_result = await db.execute(device_query)
+    devices = list(device_result.scalars().all())
+
+    summaries = []
+    for device in devices:
+        takeoffs_q = await db.execute(
+            select(FlightEvent)
+            .where(
+                and_(
+                    FlightEvent.device_id == device.id,
+                    FlightEvent.event_type == "takeoff",
+                    FlightEvent.timestamp >= start_naive,
+                    FlightEvent.timestamp < end_naive,
+                )
+            )
+            .order_by(FlightEvent.timestamp.asc())
+        )
+        takeoffs = list(takeoffs_q.scalars().all())
+
+        landings_q = await db.execute(
+            select(FlightEvent)
+            .where(
+                and_(
+                    FlightEvent.device_id == device.id,
+                    FlightEvent.event_type.in_(["landing", "return_home"]),
+                    FlightEvent.timestamp >= start_naive,
+                    FlightEvent.timestamp < end_naive,
+                )
+            )
+            .order_by(FlightEvent.timestamp.asc())
+        )
+        landings = list(landings_q.scalars().all())
+
+        total_hours = 0.0
+        pairs = min(len(takeoffs), len(landings))
+        for i in range(pairs):
+            dur = (landings[i].timestamp - takeoffs[i].timestamp).total_seconds()
+            if dur > 0:
+                total_hours += dur / 3600.0
+
+        bounds_q = await db.execute(
+            select(
+                func.min(FlightPosition.latitude).label("min_lat"),
+                func.max(FlightPosition.latitude).label("max_lat"),
+                func.min(FlightPosition.longitude).label("min_lon"),
+                func.max(FlightPosition.longitude).label("max_lon"),
+            ).where(
+                and_(
+                    FlightPosition.device_id == device.id,
+                    FlightPosition.timestamp >= start_naive,
+                    FlightPosition.timestamp < end_naive,
+                )
+            )
+        )
+        bounds = bounds_q.first()
+
+        summaries.append(
+            DailyFlightSummary(
+                date=f"{start_naive.date()} to {end_naive.date()}",
+                device_id=device.id,
+                device_name=device.name,
+                flight_count=len(takeoffs),
+                total_flight_hours=round(total_hours, 4),
+                min_latitude=bounds.min_lat if bounds and bounds.min_lat else None,
+                max_latitude=bounds.max_lat if bounds and bounds.max_lat else None,
+                min_longitude=bounds.min_lon if bounds and bounds.min_lon else None,
+                max_longitude=bounds.max_lon if bounds and bounds.max_lon else None,
+            )
+        )
+
+    return summaries
