@@ -35,6 +35,25 @@ class Task(Base):
     alerts = relationship("Alert", back_populates="task")
     media_files = relationship("MediaFile", back_populates="task")
     anomalies = relationship("AnomalyPoint", back_populates="task")
+    timeline_events = relationship("TaskEvent", back_populates="task", order_by="TaskEvent.timestamp")
+
+
+class TaskEvent(Base):
+    __tablename__ = "task_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False)
+    event_type = Column(String(50), nullable=False)
+    old_status = Column(String(20), nullable=True)
+    new_status = Column(String(20), nullable=True)
+    source = Column(String(20), nullable=False, default="manual")
+    triggered_by = Column(String(100), nullable=True)
+    description = Column(String(500), nullable=True)
+    details_json = Column(Text, default="{}")
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    task = relationship("Task", back_populates="timeline_events")
 
 
 class Route(Base):

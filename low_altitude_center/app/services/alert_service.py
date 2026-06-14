@@ -5,8 +5,8 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.models import Alert
-from ..schemas.schemas import AlertCreate, AlertOut, SubscriptionCreate, SubscriptionOut, DeliveryLogOut
-from ..core.events import register_subscription, remove_subscription, publish_event, get_subscriptions, get_delivery_log
+from ..schemas.schemas import AlertCreate, AlertOut, SubscriptionCreate, SubscriptionOut, DeliveryLogOut, DeliveryAttempt, RetryResult
+from ..core.events import register_subscription, remove_subscription, publish_event, get_subscriptions, get_delivery_log, get_failed_deliveries, retry_failed_deliveries
 
 
 async def create_alert(db: AsyncSession, data: AlertCreate) -> Alert:
@@ -121,13 +121,57 @@ def list_delivery_log(subscriber_id: str = None, limit: int = 50) -> list[Delive
     logs = get_delivery_log(subscriber_id=subscriber_id, limit=limit)
     return [
         DeliveryLogOut(
+            delivery_id=l["delivery_id"],
             subscriber_id=l["subscriber_id"],
             callback_url=l["callback_url"],
             event_type=l["event_type"],
             success=l["success"],
-            status_code=l.get("status_code"),
-            error=l.get("error"),
-            timestamp=l["timestamp"],
+            attempts=[
+                DeliveryAttempt(
+                    attempt=a["attempt"],
+                    success=a["success"],
+                    status_code=a.get("status_code"),
+                    error=a.get("error"),
+                    timestamp=a["timestamp"],
+                )
+                for a in l.get("attempts", [])
+            ],
+            first_attempt_at=l["first_attempt_at"],
+            last_attempt_at=l.get("last_attempt_at"),
         )
         for l in logs
     ]
+
+
+def list_failed_deliveries(subscriber_id: str = None, limit: int = 50) -> list[DeliveryLogOut]:
+    logs = get_failed_deliveries(subscriber_id=subscriber_id, limit=limit)
+    return [
+        DeliveryLogOut(
+            delivery_id=l["delivery_id"],
+            subscriber_id=l["subscriber_id"],
+            callback_url=l["callback_url"],
+            event_type=l["event_type"],
+            success=l["success"],
+            attempts=[
+                DeliveryAttempt(
+                    attempt=a["attempt"],
+                    success=a["success"],
+                    status_code=a.get("status_code"),
+                    error=a.get("error"),
+                    timestamp=a["timestamp"],
+                )
+                for a in l.get("attempts", [])
+            ],
+            first_attempt_at=l["first_attempt_at"],
+            last_attempt_at=l.get("last_attempt_at"),
+        )
+        for l in logs
+    ]
+
+
+async def retry_deliveries(subscriber_id: str = None, limit: int = 10) -> RetryResult:
+    result = await retry_failed_deliveries(subscriber_id=subscriber_id, limit=limit)
+    return RetryResult(
+        retried_count=result["retried_count"],
+        total_failed=result["total_failed"],
+    )

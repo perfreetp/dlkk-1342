@@ -4,9 +4,10 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import async_session
-from ..models.models import Task, Device
+from ..models.models import Task, Device, TaskEvent
 from ..schemas.schemas import TaskCreate, TaskUpdate, TaskMergeRequest
 from ..core.events import publish_event
+from ..core.enums import UNAVAILABLE_DEVICE_STATUSES
 
 VALID_TRANSITIONS = {
     "draft": ["planned", "cancelled"],
@@ -18,7 +19,7 @@ VALID_TRANSITIONS = {
 }
 
 
-async def _transition_status(db: AsyncSession, task: Task, new_status: str) -> Task:
+async def _transition_status(db: AsyncSession, task: Task, new_status: str, source: str = "manual", description: str = None) -> Task:
     old_status = task.status
     if new_status == old_status:
         return task
@@ -29,8 +30,20 @@ async def _transition_status(db: AsyncSession, task: Task, new_status: str) -> T
             f"Allowed transitions: {allowed}"
         )
     task.status = new_status
+
+    event = TaskEvent(
+        task_id=task.id,
+        event_type="status_changed",
+        old_status=old_status,
+        new_status=new_status,
+        source=source,
+        description=description or f"Status changed from {old_status} to {new_status}",
+    )
+    db.add(event)
+
     await db.commit()
     await db.refresh(task)
+    await db.refresh(event)
 
     await publish_event(
         event_type="task.status_changed",
@@ -38,7 +51,10 @@ async def _transition_status(db: AsyncSession, task: Task, new_status: str) -> T
             "task_id": task.id,
             "old_status": old_status,
             "new_status": new_status,
+            "source": source,
             "name": task.name,
+            "event_id": event.id,
+            "timestamp": event.timestamp.isoformat() if event.timestamp else None,
         },
     )
 
@@ -56,6 +72,18 @@ async def create_task(db: AsyncSession, task_data: TaskCreate) -> Task:
 async def get_task(db: AsyncSession, task_id: int) -> Optional[Task]:
     result = await db.execute(select(Task).where(Task.id == task_id))
     return result.scalars().first()
+
+
+async def get_task_timeline(db: AsyncSession, task_id: int) -> Optional[list[TaskEvent]]:
+    task = await get_task(db, task_id)
+    if task is None:
+        return None
+    result = await db.execute(
+        select(TaskEvent)
+        .where(TaskEvent.task_id == task_id)
+        .order_by(TaskEvent.timestamp.asc())
+    )
+    return list(result.scalars().all())
 
 
 async def list_tasks(
@@ -168,9 +196,9 @@ async def assign_pilot_and_drone(
     drone = drone_result.scalars().first()
     if drone is None:
         raise ValueError(f"Device with id {drone_id} not found")
-    if drone.status in ("disabled", "maintenance"):
+    if drone.status in UNAVAILABLE_DEVICE_STATUSES:
         raise ValueError(
-            f"Device '{drone.name}' (id={drone_id}) is currently '{drone.status}' "
+            f"Drone '{drone.name}' (id={drone_id}) is currently '{drone.status}' "
             "and cannot be assigned to a task"
         )
 
@@ -178,9 +206,9 @@ async def assign_pilot_and_drone(
     pilot = pilot_result.scalars().first()
     if pilot is None:
         raise ValueError(f"Device with id {pilot_id} not found")
-    if pilot.status in ("disabled", "maintenance"):
+    if pilot.status in UNAVAILABLE_DEVICE_STATUSES:
         raise ValueError(
-            f"Device '{pilot.name}' (id={pilot_id}) is currently '{pilot.status}' "
+            f"Pilot '{pilot.name}' (id={pilot_id}) is currently '{pilot.status}' "
             "and cannot be assigned to a task"
         )
 

@@ -24,6 +24,9 @@ class DeviceStatus(str, Enum):
     RETIRED = "retired"
 
 
+UNAVAILABLE_DEVICE_STATUSES = {"offline", "maintenance", "retired"}
+
+
 class FlightEventType(str, Enum):
     TAKEOFF = "takeoff"
     LANDING = "landing"

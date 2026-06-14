@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.services import alert_service
-from app.schemas.schemas import AlertCreate, AlertOut, SubscriptionCreate, SubscriptionOut, DeliveryLogOut
+from app.schemas.schemas import AlertCreate, AlertOut, SubscriptionCreate, SubscriptionOut, DeliveryLogOut, RetryResult
 
 router = APIRouter(prefix="/api/v1/alerts", tags=["告警管理"])
 
@@ -49,6 +49,22 @@ async def get_delivery_log(
     limit: int = Query(50, ge=1, le=200),
 ):
     return alert_service.list_delivery_log(subscriber_id=subscriber_id, limit=limit)
+
+
+@router.get("/failed-deliveries", response_model=list[DeliveryLogOut])
+async def get_failed_deliveries(
+    subscriber_id: str | None = None,
+    limit: int = Query(50, ge=1, le=200),
+):
+    return alert_service.list_failed_deliveries(subscriber_id=subscriber_id, limit=limit)
+
+
+@router.post("/subscriptions/{subscriber_id}/retry", response_model=RetryResult)
+async def retry_subscriber_deliveries(
+    subscriber_id: str,
+    limit: int = Query(10, ge=1, le=50),
+):
+    return await alert_service.retry_deliveries(subscriber_id=subscriber_id, limit=limit)
 
 
 @router.get("/{alert_id}", response_model=AlertOut)

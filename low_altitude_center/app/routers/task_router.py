@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.services import task_service
-from app.schemas.schemas import TaskCreate, TaskUpdate, TaskOut, TaskMergeRequest
+from app.schemas.schemas import TaskCreate, TaskUpdate, TaskOut, TaskMergeRequest, TaskEventOut
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["任务管理"])
 
@@ -23,6 +23,14 @@ async def list_tasks(
 ):
     items, total = await task_service.list_tasks(db, status=status, task_type=task_type, page=page, page_size=page_size)
     return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+
+@router.get("/{task_id}/timeline", response_model=list[TaskEventOut])
+async def get_task_timeline(task_id: int, db: AsyncSession = Depends(get_db)):
+    events = await task_service.get_task_timeline(db, task_id)
+    if events is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return events
 
 
 @router.get("/{task_id}", response_model=TaskOut)

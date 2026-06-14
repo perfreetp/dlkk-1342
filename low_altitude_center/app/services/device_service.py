@@ -12,6 +12,7 @@ from ..schemas.schemas import (
     UtilizationStat,
     TaskFlightSummary,
     DailyFlightSummary,
+    DailyTaskBreakdown,
 )
 
 
@@ -212,6 +213,8 @@ async def get_task_flight_summaries(
             Task.name.label("task_name"),
             Device.name.label("device_name"),
             func.count(FlightEvent.id).label("event_count"),
+            func.min(FlightEvent.timestamp).label("first_ts"),
+            func.max(FlightEvent.timestamp).label("last_ts"),
         )
         .join(Task, FlightEvent.task_id == Task.id, isouter=True)
         .join(Device, FlightEvent.device_id == Device.id)
@@ -268,6 +271,7 @@ async def get_task_flight_summaries(
 
         pos_q = await db.execute(
             select(
+                func.count(FlightPosition.id).label("pos_count"),
                 func.min(FlightPosition.latitude).label("min_lat"),
                 func.max(FlightPosition.latitude).label("max_lat"),
                 func.min(FlightPosition.longitude).label("min_lon"),
@@ -279,7 +283,17 @@ async def get_task_flight_summaries(
                 )
             )
         )
-        bounds = pos_q.first()
+        pos_data = pos_q.first()
+        pos_count = pos_data.pos_count if pos_data else 0
+
+        first_flight = None
+        last_flight = None
+        if takeoffs:
+            first_flight = takeoffs[0].timestamp
+        if landings:
+            last_flight = landings[-1].timestamp
+        elif takeoffs:
+            last_flight = takeoffs[-1].timestamp
 
         summaries.append(
             TaskFlightSummary(
@@ -289,10 +303,13 @@ async def get_task_flight_summaries(
                 device_name=row.device_name,
                 flight_count=flight_count,
                 total_flight_hours=round(total_hours, 4),
-                min_latitude=bounds.min_lat if bounds and bounds.min_lat else None,
-                max_latitude=bounds.max_lat if bounds and bounds.max_lat else None,
-                min_longitude=bounds.min_lon if bounds and bounds.min_lon else None,
-                max_longitude=bounds.max_lon if bounds and bounds.max_lon else None,
+                first_flight_time=first_flight,
+                last_flight_time=last_flight,
+                position_count=pos_count,
+                min_latitude=pos_data.min_lat if pos_data and pos_data.min_lat else None,
+                max_latitude=pos_data.max_lat if pos_data and pos_data.max_lat else None,
+                min_longitude=pos_data.min_lon if pos_data and pos_data.min_lon else None,
+                max_longitude=pos_data.max_lon if pos_data and pos_data.max_lon else None,
             )
         )
 
@@ -307,7 +324,7 @@ async def get_daily_flight_summaries(
 ) -> list[DailyFlightSummary]:
     now = datetime.now(timezone.utc)
     if start_date is None:
-        start_date = now - timedelta(days=30)
+        start_date = now - timedelta(days=7)
     if end_date is None:
         end_date = now
 
@@ -322,6 +339,8 @@ async def get_daily_flight_summaries(
 
     summaries = []
     for device in devices:
+        daily_data = {}
+
         takeoffs_q = await db.execute(
             select(FlightEvent)
             .where(
@@ -350,41 +369,95 @@ async def get_daily_flight_summaries(
         )
         landings = list(landings_q.scalars().all())
 
-        total_hours = 0.0
         pairs = min(len(takeoffs), len(landings))
         for i in range(pairs):
-            dur = (landings[i].timestamp - takeoffs[i].timestamp).total_seconds()
-            if dur > 0:
-                total_hours += dur / 3600.0
+            tk = takeoffs[i]
+            ld = landings[i]
+            day_key = tk.timestamp.strftime("%Y-%m-%d")
+            dur_hours = (ld.timestamp - tk.timestamp).total_seconds() / 3600.0
+            if dur_hours < 0:
+                dur_hours = 0
+            if day_key not in daily_data:
+                daily_data[day_key] = {
+                    "flight_count": 0,
+                    "total_hours": 0.0,
+                    "tasks": {},
+                }
+            daily_data[day_key]["flight_count"] += 1
+            daily_data[day_key]["total_hours"] += dur_hours
 
-        bounds_q = await db.execute(
+            task_id = tk.task_id or 0
+            task_key = str(task_id)
+            if task_key not in daily_data[day_key]["tasks"]:
+                daily_data[day_key]["tasks"][task_key] = {
+                    "task_id": task_id,
+                    "task_name": "",
+                    "flight_count": 0,
+                    "total_hours": 0.0,
+                }
+            daily_data[day_key]["tasks"][task_key]["flight_count"] += 1
+            daily_data[day_key]["tasks"][task_key]["total_hours"] += dur_hours
+
+        pos_q = await db.execute(
             select(
+                func.date(FlightPosition.timestamp).label("day"),
                 func.min(FlightPosition.latitude).label("min_lat"),
                 func.max(FlightPosition.latitude).label("max_lat"),
                 func.min(FlightPosition.longitude).label("min_lon"),
                 func.max(FlightPosition.longitude).label("max_lon"),
-            ).where(
+            )
+            .where(
                 and_(
                     FlightPosition.device_id == device.id,
                     FlightPosition.timestamp >= start_naive,
                     FlightPosition.timestamp < end_naive,
                 )
             )
+            .group_by(func.date(FlightPosition.timestamp))
         )
-        bounds = bounds_q.first()
+        pos_bounds = {row.day: row for row in pos_q.all()}
 
-        summaries.append(
-            DailyFlightSummary(
-                date=f"{start_naive.date()} to {end_naive.date()}",
-                device_id=device.id,
-                device_name=device.name,
-                flight_count=len(takeoffs),
-                total_flight_hours=round(total_hours, 4),
-                min_latitude=bounds.min_lat if bounds and bounds.min_lat else None,
-                max_latitude=bounds.max_lat if bounds and bounds.max_lat else None,
-                min_longitude=bounds.min_lon if bounds and bounds.min_lon else None,
-                max_longitude=bounds.max_lon if bounds and bounds.max_lon else None,
+        task_name_cache = {}
+
+        for day_key in sorted(daily_data.keys()):
+            day_data = daily_data[day_key]
+            bounds = pos_bounds.get(day_key)
+
+            task_breakdown = []
+            for task_key, task_info in day_data["tasks"].items():
+                task_id = task_info["task_id"]
+                task_name = ""
+                if task_id and task_id not in task_name_cache:
+                    t_result = await db.execute(
+                        select(Task).where(Task.id == task_id)
+                    )
+                    task_obj = t_result.scalars().first()
+                    task_name_cache[task_id] = task_obj.name if task_obj else ""
+                if task_id:
+                    task_name = task_name_cache.get(task_id, "")
+
+                task_breakdown.append(
+                    DailyTaskBreakdown(
+                        task_id=task_id or 0,
+                        task_name=task_name,
+                        flight_count=task_info["flight_count"],
+                        total_flight_hours=round(task_info["total_hours"], 4),
+                    )
+                )
+
+            summaries.append(
+                DailyFlightSummary(
+                    date=day_key,
+                    device_id=device.id,
+                    device_name=device.name,
+                    flight_count=day_data["flight_count"],
+                    total_flight_hours=round(day_data["total_hours"], 4),
+                    min_latitude=bounds.min_lat if bounds and bounds.min_lat else None,
+                    max_latitude=bounds.max_lat if bounds and bounds.max_lat else None,
+                    min_longitude=bounds.min_lon if bounds and bounds.min_lon else None,
+                    max_longitude=bounds.max_lon if bounds and bounds.max_lon else None,
+                    task_breakdown=task_breakdown,
+                )
             )
-        )
 
     return summaries

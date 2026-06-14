@@ -52,6 +52,20 @@ class TaskOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class TaskEventOut(BaseModel):
+    id: int
+    task_id: int
+    event_type: str
+    old_status: Optional[str] = None
+    new_status: Optional[str] = None
+    source: str
+    triggered_by: Optional[str] = None
+    description: Optional[str] = None
+    timestamp: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class TaskMergeRequest(BaseModel):
     task_ids: List[int] = Field(..., min_length=2)
     merged_name: str = Field(..., max_length=200)
@@ -283,14 +297,28 @@ class SubscriptionOut(BaseModel):
     callback_url: str
 
 
-class DeliveryLogOut(BaseModel):
-    subscriber_id: str
-    callback_url: str
-    event_type: str
+class DeliveryAttempt(BaseModel):
+    attempt: int
     success: bool
     status_code: Optional[int] = None
     error: Optional[str] = None
     timestamp: str
+
+
+class DeliveryLogOut(BaseModel):
+    delivery_id: str
+    subscriber_id: str
+    callback_url: str
+    event_type: str
+    success: bool
+    attempts: List[DeliveryAttempt] = []
+    first_attempt_at: str
+    last_attempt_at: Optional[str] = None
+
+
+class RetryResult(BaseModel):
+    retried_count: int
+    total_failed: int
 
 
 class MediaFileCreate(BaseModel):
@@ -371,10 +399,20 @@ class TaskFlightSummary(BaseModel):
     device_name: str
     flight_count: int
     total_flight_hours: float
+    first_flight_time: Optional[datetime] = None
+    last_flight_time: Optional[datetime] = None
+    position_count: int = 0
     min_latitude: Optional[float] = None
     max_latitude: Optional[float] = None
     min_longitude: Optional[float] = None
     max_longitude: Optional[float] = None
+
+
+class DailyTaskBreakdown(BaseModel):
+    task_id: int
+    task_name: str
+    flight_count: int
+    total_flight_hours: float
 
 
 class DailyFlightSummary(BaseModel):
@@ -387,6 +425,7 @@ class DailyFlightSummary(BaseModel):
     max_latitude: Optional[float] = None
     min_longitude: Optional[float] = None
     max_longitude: Optional[float] = None
+    task_breakdown: List[DailyTaskBreakdown] = []
 
 
 class TrajectoryPoint(BaseModel):

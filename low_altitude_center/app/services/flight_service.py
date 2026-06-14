@@ -5,7 +5,7 @@ from typing import Optional
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models.models import FlightPosition, FlightEvent, Device, Task, Alert, Route
+from ..models.models import FlightPosition, FlightEvent, Device, Task, Alert, Route, TaskEvent
 from ..schemas.schemas import (
     FlightPositionCreate,
     FlightPositionOut,
@@ -15,6 +15,7 @@ from ..schemas.schemas import (
 )
 from ..core.events import publish_event
 from ..services.task_service import _transition_status
+from ..core.enums import UNAVAILABLE_DEVICE_STATUSES
 
 
 LOW_BATTERY_THRESHOLD = 20.0
@@ -111,7 +112,7 @@ async def report_position(db: AsyncSession, data: FlightPositionCreate) -> Fligh
     device = device_result.scalars().first()
     if device is None:
         raise ValueError(f"Device with id {data.device_id} not found")
-    if device.status in ("disabled", "maintenance"):
+    if device.status in UNAVAILABLE_DEVICE_STATUSES:
         raise ValueError(
             f"Device '{device.name}' (id={data.device_id}) is currently '{device.status}' "
             "and cannot report flight data"
@@ -177,7 +178,7 @@ async def record_event(db: AsyncSession, data: FlightEventCreate) -> FlightEvent
     device = device_result.scalars().first()
     if device is None:
         raise ValueError(f"Device with id {data.device_id} not found")
-    if device.status in ("disabled", "maintenance"):
+    if device.status in UNAVAILABLE_DEVICE_STATUSES:
         raise ValueError(
             f"Device '{device.name}' (id={data.device_id}) is currently '{device.status}' "
             "and cannot report flight events"
@@ -207,20 +208,43 @@ async def record_event(db: AsyncSession, data: FlightEventCreate) -> FlightEvent
         if task.status in ("draft", "planned", "approved"):
             try:
                 if task.status == "draft":
-                    await _transition_status(db, task, "planned")
+                    await _transition_status(db, task, "planned", source="flight", description="Auto-transitioned by takeoff event")
                 if task.status == "planned":
-                    await _transition_status(db, task, "approved")
+                    await _transition_status(db, task, "approved", source="flight", description="Auto-transitioned by takeoff event")
                 if task.status == "approved":
-                    await _transition_status(db, task, "in_progress")
+                    await _transition_status(db, task, "in_progress", source="flight", description="Auto-transitioned by takeoff event")
             except ValueError:
                 pass
     elif data.event_type in ("landing", "return_home") and task is not None:
         task.actual_end = now
         if task.status == "in_progress":
             try:
-                await _transition_status(db, task, "completed")
+                await _transition_status(db, task, "completed", source="flight", description="Auto-transitioned by landing/return_home event")
             except ValueError:
                 pass
+
+    if task is not None:
+        task_event_desc = {
+            "takeoff": "Drone took off",
+            "landing": "Drone landed",
+            "return_home": "Drone returned home",
+            "hover": "Drone hovering",
+            "waypoint_reached": "Waypoint reached",
+        }
+        task_event = TaskEvent(
+            task_id=task.id,
+            event_type=f"flight_{data.event_type}",
+            source="flight",
+            triggered_by=f"device:{data.device_id}",
+            description=task_event_desc.get(data.event_type, f"Flight event: {data.event_type}"),
+            details_json=json.dumps({
+                "device_id": data.device_id,
+                "latitude": data.latitude,
+                "longitude": data.longitude,
+                "altitude": data.altitude,
+            }),
+        )
+        db.add(task_event)
 
     await db.commit()
     await db.refresh(event)
