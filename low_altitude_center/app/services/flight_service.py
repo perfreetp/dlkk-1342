@@ -106,17 +106,26 @@ def _point_in_polygon(lat: float, lon: float, polygon: list) -> bool:
 
 
 async def report_position(db: AsyncSession, data: FlightPositionCreate) -> FlightPosition:
+    device_result = await db.execute(select(Device).where(Device.id == data.device_id))
+    device = device_result.scalars().first()
+    if device is None:
+        raise ValueError(f"Device with id {data.device_id} not found")
+
+    task = None
+    if data.task_id is not None:
+        task_result = await db.execute(select(Task).where(Task.id == data.task_id))
+        task = task_result.scalars().first()
+        if task is None:
+            raise ValueError(f"Task with id {data.task_id} not found")
+
     position = FlightPosition(**data.model_dump())
     db.add(position)
 
-    result = await db.execute(select(Device).where(Device.id == data.device_id))
-    device = result.scalars().first()
-    if device is not None:
-        device.current_latitude = data.latitude
-        device.current_longitude = data.longitude
-        device.current_altitude = data.altitude
-        if data.battery_percent is not None:
-            device.current_battery = data.battery_percent
+    device.current_latitude = data.latitude
+    device.current_longitude = data.longitude
+    device.current_altitude = data.altitude
+    if data.battery_percent is not None:
+        device.current_battery = data.battery_percent
 
     await _check_and_create_alerts(db, device, data)
 
@@ -158,6 +167,18 @@ async def get_trajectory(
 
 
 async def record_event(db: AsyncSession, data: FlightEventCreate) -> FlightEvent:
+    device_result = await db.execute(select(Device).where(Device.id == data.device_id))
+    device = device_result.scalars().first()
+    if device is None:
+        raise ValueError(f"Device with id {data.device_id} not found")
+
+    task = None
+    if data.task_id is not None:
+        task_result = await db.execute(select(Task).where(Task.id == data.task_id))
+        task = task_result.scalars().first()
+        if task is None:
+            raise ValueError(f"Task with id {data.task_id} not found")
+
     event = FlightEvent(
         task_id=data.task_id,
         device_id=data.device_id,
@@ -170,16 +191,10 @@ async def record_event(db: AsyncSession, data: FlightEventCreate) -> FlightEvent
     db.add(event)
 
     now = datetime.now(timezone.utc)
-    if data.event_type == "takeoff" and data.task_id is not None:
-        result = await db.execute(select(Task).where(Task.id == data.task_id))
-        task = result.scalars().first()
-        if task is not None:
-            task.actual_start = now
-    elif data.event_type in ("landing", "return_home") and data.task_id is not None:
-        result = await db.execute(select(Task).where(Task.id == data.task_id))
-        task = result.scalars().first()
-        if task is not None:
-            task.actual_end = now
+    if data.event_type == "takeoff" and task is not None:
+        task.actual_start = now
+    elif data.event_type in ("landing", "return_home") and task is not None:
+        task.actual_end = now
 
     await db.commit()
     await db.refresh(event)

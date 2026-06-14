@@ -277,6 +277,12 @@ class SubscriptionCreate(BaseModel):
     callback_url: str = Field(..., max_length=500)
 
 
+class SubscriptionOut(BaseModel):
+    subscriber_id: str
+    event_types: List[str]
+    callback_url: str
+
+
 class MediaFileCreate(BaseModel):
     task_id: Optional[int] = None
     file_type: str

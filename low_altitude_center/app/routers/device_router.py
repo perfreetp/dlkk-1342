@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -41,8 +42,39 @@ async def get_utilization_stats(
     end_date: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
+    start_dt = None
+    end_dt = None
+
+    if start_date:
+        try:
+            start_dt = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
+            if start_dt.tzinfo is None:
+                start_dt = start_dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid start_date format, use ISO 8601 (e.g., 2024-01-01 or 2024-01-01T00:00:00Z)"
+            )
+
+    if end_date:
+        try:
+            end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid end_date format, use ISO 8601 (e.g., 2024-01-01 or 2024-01-01T00:00:00Z)"
+            )
+
+    if start_dt and end_dt and start_dt >= end_dt:
+        raise HTTPException(
+            status_code=400,
+            detail="start_date must be before end_date"
+        )
+
     return await device_service.get_utilization_stats(
-        db, device_id=device_id, start_date=start_date, end_date=end_date
+        db, device_id=device_id, start_date=start_dt, end_date=end_dt
     )
 
 

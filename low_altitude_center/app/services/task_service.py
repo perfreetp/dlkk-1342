@@ -73,6 +73,7 @@ async def cancel_task(db: AsyncSession, task_id: int) -> Optional[Task]:
             f"Cannot cancel task with status '{task.status}'. "
             "Only tasks with status draft, planned, or approved can be cancelled."
         )
+    old_status = task.status
     task.status = "cancelled"
     await db.commit()
     await db.refresh(task)
@@ -81,7 +82,7 @@ async def cancel_task(db: AsyncSession, task_id: int) -> Optional[Task]:
         event_type="task.status_changed",
         payload={
             "task_id": task.id,
-            "old_status": "cancelled",
+            "old_status": old_status,
             "new_status": "cancelled",
             "name": task.name,
         },

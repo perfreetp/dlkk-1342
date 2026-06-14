@@ -1,5 +1,5 @@
 from datetime import datetime
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -19,7 +19,13 @@ router = APIRouter(prefix="/api/v1/flights", tags=["飞行管理"])
 async def report_position(
     position: FlightPositionCreate, db: AsyncSession = Depends(get_db)
 ):
-    return await flight_service.report_position(db, position)
+    try:
+        return await flight_service.report_position(db, position)
+    except ValueError as e:
+        msg = str(e)
+        if "not found" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
 
 
 @router.get("/{device_id}/trajectory", response_model=list[TrajectoryPoint])
@@ -38,7 +44,13 @@ async def get_trajectory(
 async def record_event(
     event: FlightEventCreate, db: AsyncSession = Depends(get_db)
 ):
-    return await flight_service.record_event(db, event)
+    try:
+        return await flight_service.record_event(db, event)
+    except ValueError as e:
+        msg = str(e)
+        if "not found" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
 
 
 @router.get("/events")

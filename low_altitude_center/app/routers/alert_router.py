@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.services import alert_service
-from app.schemas.schemas import AlertCreate, AlertOut, SubscriptionCreate
+from app.schemas.schemas import AlertCreate, AlertOut, SubscriptionCreate, SubscriptionOut
 
 router = APIRouter(prefix="/api/v1/alerts", tags=["告警管理"])
 
@@ -28,6 +28,21 @@ async def list_alerts(
     return {"total": total, "page": page, "page_size": page_size, "items": items}
 
 
+@router.post("/subscriptions")
+async def subscribe(body: SubscriptionCreate):
+    return await alert_service.subscribe(body)
+
+
+@router.delete("/subscriptions/{subscriber_id}")
+async def unsubscribe(subscriber_id: str):
+    return await alert_service.unsubscribe(subscriber_id)
+
+
+@router.get("/subscriptions", response_model=list[SubscriptionOut])
+async def list_subscriptions():
+    return alert_service.list_subscriptions()
+
+
 @router.get("/{alert_id}", response_model=AlertOut)
 async def get_alert(alert_id: int, db: AsyncSession = Depends(get_db)):
     alert = await alert_service.get_alert(db, alert_id)
@@ -42,18 +57,3 @@ async def mark_alert_read(alert_id: int, db: AsyncSession = Depends(get_db)):
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
     return alert
-
-
-@router.post("/subscriptions")
-async def subscribe(body: SubscriptionCreate):
-    return await alert_service.subscribe(body)
-
-
-@router.delete("/subscriptions/{subscriber_id}")
-async def unsubscribe(subscriber_id: str):
-    return await alert_service.unsubscribe(subscriber_id)
-
-
-@router.get("/subscriptions")
-async def list_subscriptions():
-    return alert_service.list_subscriptions()

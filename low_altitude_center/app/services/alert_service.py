@@ -5,7 +5,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.models import Alert
-from ..schemas.schemas import AlertCreate, AlertOut, SubscriptionCreate
+from ..schemas.schemas import AlertCreate, AlertOut, SubscriptionCreate, SubscriptionOut
 from ..core.events import register_subscription, remove_subscription, publish_event, get_subscriptions
 
 
@@ -105,5 +105,13 @@ async def unsubscribe(subscriber_id: str) -> dict:
     return {"subscriber_id": subscriber_id, "removed": True}
 
 
-def list_subscriptions() -> dict:
-    return get_subscriptions()
+def list_subscriptions() -> list[SubscriptionOut]:
+    subs = get_subscriptions()
+    return [
+        SubscriptionOut(
+            subscriber_id=sub_id,
+            event_types=sub["event_types"],
+            callback_url=sub["callback_url"],
+        )
+        for sub_id, sub in subs.items()
+    ]
