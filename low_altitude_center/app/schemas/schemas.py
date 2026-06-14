@@ -361,4 +361,4 @@ class PaginatedResponse(BaseModel):
     total: int
     page: int
     page_size: int
-    items: list
+    items: List

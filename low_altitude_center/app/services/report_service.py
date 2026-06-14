@@ -1,4 +1,5 @@
 import json
+from calendar import monthrange
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -15,6 +16,10 @@ from ..schemas.schemas import (
     UtilizationStat,
 )
 from . import device_service
+
+
+def _strip_tz(dt):
+    return dt.replace(tzinfo=None) if dt and dt.tzinfo else dt
 
 
 async def upload_media(db: AsyncSession, data: MediaFileCreate) -> MediaFile:
@@ -46,7 +51,7 @@ async def list_media(
     total = total_result.scalar_one()
 
     offset = (page - 1) * page_size
-    query = query.offset(offset).limit(page_size)
+    query = query.order_by(MediaFile.id.desc()).offset(offset).limit(page_size)
     result = await db.execute(query)
     items = list(result.scalars().all())
 
@@ -88,7 +93,7 @@ async def list_anomalies(
     total = total_result.scalar_one()
 
     offset = (page - 1) * page_size
-    query = query.offset(offset).limit(page_size)
+    query = query.order_by(AnomalyPoint.id.desc()).offset(offset).limit(page_size)
     result = await db.execute(query)
     items = list(result.scalars().all())
 
@@ -110,6 +115,65 @@ async def resolve_anomaly(
     return anomaly
 
 
+async def _compute_period_flight_stats(
+    db: AsyncSession, start: datetime, end: datetime, device_id: int = None
+) -> tuple[int, float]:
+    start_naive = start.replace(tzinfo=None) if start.tzinfo else start
+    end_naive = end.replace(tzinfo=None) if end.tzinfo else end
+    device_filter = (
+        FlightEvent.device_id == device_id if device_id is not None else True
+    )
+
+    takeoff_count_result = await db.execute(
+        select(func.count()).select_from(FlightEvent).where(
+            and_(
+                FlightEvent.event_type == "takeoff",
+                FlightEvent.timestamp >= start_naive,
+                FlightEvent.timestamp < end_naive,
+                device_filter,
+            )
+        )
+    )
+    total_flights = takeoff_count_result.scalar_one()
+
+    takeoffs_result = await db.execute(
+        select(FlightEvent)
+        .where(
+            and_(
+                FlightEvent.event_type == "takeoff",
+                FlightEvent.timestamp >= start_naive,
+                FlightEvent.timestamp < end_naive,
+                device_filter,
+            )
+        )
+        .order_by(FlightEvent.timestamp.asc())
+    )
+    takeoffs = list(takeoffs_result.scalars().all())
+
+    landings_result = await db.execute(
+        select(FlightEvent)
+        .where(
+            and_(
+                FlightEvent.event_type.in_(["landing", "return_home"]),
+                FlightEvent.timestamp >= start_naive,
+                FlightEvent.timestamp < end_naive,
+                device_filter,
+            )
+        )
+        .order_by(FlightEvent.timestamp.asc())
+    )
+    landings = list(landings_result.scalars().all())
+
+    total_flight_hours = 0.0
+    pairs = min(len(takeoffs), len(landings))
+    for i in range(pairs):
+        duration = (landings[i].timestamp - takeoffs[i].timestamp).total_seconds()
+        if duration > 0:
+            total_flight_hours += duration / 3600.0
+
+    return total_flights, round(total_flight_hours, 4)
+
+
 async def _build_device_summaries(
     db: AsyncSession, start: datetime, end: datetime, device_id: int = None
 ) -> list[dict]:
@@ -121,60 +185,15 @@ async def _build_device_summaries(
 
     summaries = []
     for device in devices:
-        takeoff_query = select(func.count()).select_from(FlightEvent).where(
-            and_(
-                FlightEvent.device_id == device.id,
-                FlightEvent.event_type == "takeoff",
-                FlightEvent.timestamp >= start,
-                FlightEvent.timestamp < end,
-            )
+        flight_count, flight_hours = await device_service._compute_flight_stats(
+            db, device.id, start, end
         )
-        takeoff_count_result = await db.execute(takeoff_query)
-        flight_count = takeoff_count_result.scalar_one()
-
-        landing_query = (
-            select(FlightEvent)
-            .where(
-                and_(
-                    FlightEvent.device_id == device.id,
-                    FlightEvent.event_type == "landing",
-                    FlightEvent.timestamp >= start,
-                    FlightEvent.timestamp < end,
-                )
-            )
-            .order_by(FlightEvent.timestamp.asc())
-        )
-        landing_result = await db.execute(landing_query)
-        landings = list(landing_result.scalars().all())
-
-        takeoff_events_query = (
-            select(FlightEvent)
-            .where(
-                and_(
-                    FlightEvent.device_id == device.id,
-                    FlightEvent.event_type == "takeoff",
-                    FlightEvent.timestamp >= start,
-                    FlightEvent.timestamp < end,
-                )
-            )
-            .order_by(FlightEvent.timestamp.asc())
-        )
-        takeoff_events_result = await db.execute(takeoff_events_query)
-        takeoffs = list(takeoff_events_result.scalars().all())
-
-        total_hours = 0.0
-        pairs = min(len(takeoffs), len(landings))
-        for i in range(pairs):
-            duration = (landings[i].timestamp - takeoffs[i].timestamp).total_seconds()
-            if duration > 0:
-                total_hours += duration / 3600.0
-
         summaries.append(
             {
                 "device_id": device.id,
                 "name": device.name,
                 "flight_count": flight_count,
-                "flight_hours": round(total_hours, 2),
+                "flight_hours": flight_hours,
             }
         )
 
@@ -189,58 +208,25 @@ async def generate_daily_report(
     if report_date is None:
         report_date = datetime.now(timezone.utc)
 
-    start = report_date.replace(hour=0, minute=0, second=0, microsecond=0)
-    end = start.replace(day=start.day + 1)
+    start = report_date.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+    _, days_in_month = monthrange(start.year, start.month)
+    if start.day < days_in_month:
+        end = start.replace(day=start.day + 1)
+    else:
+        if start.month == 12:
+            end = start.replace(year=start.year + 1, month=1, day=1)
+        else:
+            end = start.replace(month=start.month + 1, day=1)
 
-    takeoff_count_result = await db.execute(
-        select(func.count()).select_from(FlightEvent).where(
-            and_(
-                FlightEvent.event_type == "takeoff",
-                FlightEvent.timestamp >= start,
-                FlightEvent.timestamp < end,
-            )
-        )
+    total_flights, total_flight_hours = await _compute_period_flight_stats(
+        db, start, end, device_id
     )
-    total_flights = takeoff_count_result.scalar_one()
-
-    takeoffs_result = await db.execute(
-        select(FlightEvent)
-        .where(
-            and_(
-                FlightEvent.event_type == "takeoff",
-                FlightEvent.timestamp >= start,
-                FlightEvent.timestamp < end,
-            )
-        )
-        .order_by(FlightEvent.timestamp.asc())
-    )
-    takeoffs = list(takeoffs_result.scalars().all())
-
-    landings_result = await db.execute(
-        select(FlightEvent)
-        .where(
-            and_(
-                FlightEvent.event_type == "landing",
-                FlightEvent.timestamp >= start,
-                FlightEvent.timestamp < end,
-            )
-        )
-        .order_by(FlightEvent.timestamp.asc())
-    )
-    landings = list(landings_result.scalars().all())
-
-    total_flight_hours = 0.0
-    pairs = min(len(takeoffs), len(landings))
-    for i in range(pairs):
-        duration = (landings[i].timestamp - takeoffs[i].timestamp).total_seconds()
-        if duration > 0:
-            total_flight_hours += duration / 3600.0
 
     alerts_count_result = await db.execute(
         select(func.count()).select_from(Alert).where(
             and_(
-                Alert.created_at >= start,
-                Alert.created_at < end,
+                Alert.created_at >= _strip_tz(start),
+                Alert.created_at < _strip_tz(end),
             )
         )
     )
@@ -249,8 +235,8 @@ async def generate_daily_report(
     anomaly_count_result = await db.execute(
         select(func.count()).select_from(AnomalyPoint).where(
             and_(
-                AnomalyPoint.created_at >= start,
-                AnomalyPoint.created_at < end,
+                AnomalyPoint.created_at >= _strip_tz(start),
+                AnomalyPoint.created_at < _strip_tz(end),
             )
         )
     )
@@ -261,7 +247,7 @@ async def generate_daily_report(
     return {
         "date": start.isoformat(),
         "total_flights": total_flights,
-        "total_flight_hours": round(total_flight_hours, 2),
+        "total_flight_hours": total_flight_hours,
         "alerts_count": alerts_count,
         "anomaly_count": anomaly_count,
         "device_summaries": device_summaries,
@@ -270,65 +256,43 @@ async def generate_daily_report(
 
 async def generate_monthly_report(
     db: AsyncSession,
-    year: int,
-    month: int,
+    year: int = None,
+    month: int = None,
     device_id: int = None,
 ) -> dict:
+    now = datetime.now(timezone.utc)
+    if year is None:
+        year = now.year
+    if month is None:
+        month = now.month
+
+    if month < 1 or month > 12:
+        return {
+            "year": year,
+            "month": month,
+            "total_flights": 0,
+            "total_flight_hours": 0.0,
+            "alerts_count": 0,
+            "anomaly_count": 0,
+            "device_summaries": [],
+            "error": "Invalid month, must be 1-12",
+        }
+
     start = datetime(year, month, 1, tzinfo=timezone.utc)
     if month == 12:
         end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
     else:
         end = datetime(year, month + 1, 1, tzinfo=timezone.utc)
 
-    takeoff_count_result = await db.execute(
-        select(func.count()).select_from(FlightEvent).where(
-            and_(
-                FlightEvent.event_type == "takeoff",
-                FlightEvent.timestamp >= start,
-                FlightEvent.timestamp < end,
-            )
-        )
+    total_flights, total_flight_hours = await _compute_period_flight_stats(
+        db, start, end, device_id
     )
-    total_flights = takeoff_count_result.scalar_one()
-
-    takeoffs_result = await db.execute(
-        select(FlightEvent)
-        .where(
-            and_(
-                FlightEvent.event_type == "takeoff",
-                FlightEvent.timestamp >= start,
-                FlightEvent.timestamp < end,
-            )
-        )
-        .order_by(FlightEvent.timestamp.asc())
-    )
-    takeoffs = list(takeoffs_result.scalars().all())
-
-    landings_result = await db.execute(
-        select(FlightEvent)
-        .where(
-            and_(
-                FlightEvent.event_type == "landing",
-                FlightEvent.timestamp >= start,
-                FlightEvent.timestamp < end,
-            )
-        )
-        .order_by(FlightEvent.timestamp.asc())
-    )
-    landings = list(landings_result.scalars().all())
-
-    total_flight_hours = 0.0
-    pairs = min(len(takeoffs), len(landings))
-    for i in range(pairs):
-        duration = (landings[i].timestamp - takeoffs[i].timestamp).total_seconds()
-        if duration > 0:
-            total_flight_hours += duration / 3600.0
 
     alerts_count_result = await db.execute(
         select(func.count()).select_from(Alert).where(
             and_(
-                Alert.created_at >= start,
-                Alert.created_at < end,
+                Alert.created_at >= _strip_tz(start),
+                Alert.created_at < _strip_tz(end),
             )
         )
     )
@@ -337,8 +301,8 @@ async def generate_monthly_report(
     anomaly_count_result = await db.execute(
         select(func.count()).select_from(AnomalyPoint).where(
             and_(
-                AnomalyPoint.created_at >= start,
-                AnomalyPoint.created_at < end,
+                AnomalyPoint.created_at >= _strip_tz(start),
+                AnomalyPoint.created_at < _strip_tz(end),
             )
         )
     )
@@ -350,7 +314,7 @@ async def generate_monthly_report(
         "year": year,
         "month": month,
         "total_flights": total_flights,
-        "total_flight_hours": round(total_flight_hours, 2),
+        "total_flight_hours": total_flight_hours,
         "alerts_count": alerts_count,
         "anomaly_count": anomaly_count,
         "device_summaries": device_summaries,

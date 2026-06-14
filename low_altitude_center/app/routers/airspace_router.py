@@ -16,8 +16,8 @@ async def create_airspace(data: AirspaceCreate, db: AsyncSession = Depends(get_d
 @router.get("/")
 async def list_airspaces(
     status: str = Query(None),
-    page: int = Query(1),
-    page_size: int = Query(20),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1),
     db: AsyncSession = Depends(get_db),
 ):
     items, total = await airspace_service.list_airspaces(db, status=status, page=page, page_size=page_size)

@@ -77,7 +77,7 @@ async def list_routes(
     total = total_result.scalar_one()
 
     offset = (page - 1) * page_size
-    query = select(Route).offset(offset).limit(page_size)
+    query = select(Route).order_by(Route.id.desc()).offset(offset).limit(page_size)
     result = await db.execute(query)
     items = list(result.scalars().all())
 

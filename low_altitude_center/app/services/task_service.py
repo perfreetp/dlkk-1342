@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..core.database import async_session
 from ..models.models import Task
 from ..schemas.schemas import TaskCreate, TaskUpdate, TaskMergeRequest
+from ..core.events import publish_event
 
 
 async def create_task(db: AsyncSession, task_data: TaskCreate) -> Task:
@@ -42,7 +43,7 @@ async def list_tasks(
     total = total_result.scalar_one()
 
     offset = (page - 1) * page_size
-    query = query.offset(offset).limit(page_size)
+    query = query.order_by(Task.id.desc()).offset(offset).limit(page_size)
     result = await db.execute(query)
     items = list(result.scalars().all())
 
@@ -75,6 +76,17 @@ async def cancel_task(db: AsyncSession, task_id: int) -> Optional[Task]:
     task.status = "cancelled"
     await db.commit()
     await db.refresh(task)
+
+    await publish_event(
+        event_type="task.status_changed",
+        payload={
+            "task_id": task.id,
+            "old_status": "cancelled",
+            "new_status": "cancelled",
+            "name": task.name,
+        },
+    )
+
     return task
 
 

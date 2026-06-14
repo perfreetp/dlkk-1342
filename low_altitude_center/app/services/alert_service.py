@@ -70,7 +70,7 @@ async def list_alerts(
     total = total_result.scalar_one()
 
     offset = (page - 1) * page_size
-    query = query.offset(offset).limit(page_size)
+    query = query.order_by(Alert.id.desc()).offset(offset).limit(page_size)
     result = await db.execute(query)
     items = list(result.scalars().all())
 

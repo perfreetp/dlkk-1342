@@ -28,7 +28,7 @@ async def list_devices(
     page_size: int = Query(20, ge=1),
     db: AsyncSession = Depends(get_db),
 ):
-    total, items = await device_service.list_devices(
+    items, total = await device_service.list_devices(
         db, device_type=device_type, status=status, page=page, page_size=page_size
     )
     return {"total": total, "page": page, "page_size": page_size, "items": items}

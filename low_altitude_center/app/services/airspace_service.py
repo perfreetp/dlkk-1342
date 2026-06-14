@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.models import Airspace
 from ..schemas.schemas import AirspaceCreate, AirspaceApprove
+from ..core.events import publish_event
 
 
 async def create_airspace(db: AsyncSession, data: AirspaceCreate) -> Airspace:
@@ -49,7 +50,7 @@ async def list_airspaces(
     total = total_result.scalar_one()
 
     offset = (page - 1) * page_size
-    query = query.offset(offset).limit(page_size)
+    query = query.order_by(Airspace.id.desc()).offset(offset).limit(page_size)
     result = await db.execute(query)
     items = list(result.scalars().all())
 
@@ -73,6 +74,16 @@ async def approve_airspace(
 
     await db.commit()
     await db.refresh(airspace)
+
+    await publish_event(
+        event_type="airspace.status_changed",
+        payload={
+            "airspace_id": airspace.id,
+            "status": airspace.status,
+            "name": airspace.name,
+        },
+    )
+
     return airspace
 
 
@@ -99,4 +110,14 @@ async def revoke_airspace(db: AsyncSession, airspace_id: int) -> Optional[Airspa
     airspace.status = "revoked"
     await db.commit()
     await db.refresh(airspace)
+
+    await publish_event(
+        event_type="airspace.status_changed",
+        payload={
+            "airspace_id": airspace.id,
+            "status": "revoked",
+            "name": airspace.name,
+        },
+    )
+
     return airspace

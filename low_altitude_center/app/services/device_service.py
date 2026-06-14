@@ -1,10 +1,10 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models.models import Device, MaintenanceRecord
+from ..models.models import Device, MaintenanceRecord, FlightEvent
 from ..schemas.schemas import (
     DeviceCreate,
     DeviceUpdate,
@@ -47,7 +47,7 @@ async def list_devices(
     total = total_result.scalar_one()
 
     offset = (page - 1) * page_size
-    query = query.offset(offset).limit(page_size)
+    query = query.order_by(Device.id.desc()).offset(offset).limit(page_size)
     result = await db.execute(query)
     items = list(result.scalars().all())
 
@@ -95,6 +95,62 @@ async def get_maintenance_records(
     return list(result.scalars().all())
 
 
+async def _compute_flight_stats(
+    db: AsyncSession, device_id: int, start: datetime, end: datetime
+) -> tuple[int, float]:
+    start_naive = start.replace(tzinfo=None) if start.tzinfo else start
+    end_naive = end.replace(tzinfo=None) if end.tzinfo else end
+
+    takeoff_count_result = await db.execute(
+        select(func.count()).select_from(FlightEvent).where(
+            and_(
+                FlightEvent.device_id == device_id,
+                FlightEvent.event_type == "takeoff",
+                FlightEvent.timestamp >= start_naive,
+                FlightEvent.timestamp < end_naive,
+            )
+        )
+    )
+    flight_count = takeoff_count_result.scalar_one()
+
+    takeoffs_result = await db.execute(
+        select(FlightEvent)
+        .where(
+            and_(
+                FlightEvent.device_id == device_id,
+                FlightEvent.event_type == "takeoff",
+                FlightEvent.timestamp >= start_naive,
+                FlightEvent.timestamp < end_naive,
+            )
+        )
+        .order_by(FlightEvent.timestamp.asc())
+    )
+    takeoffs = list(takeoffs_result.scalars().all())
+
+    landings_result = await db.execute(
+        select(FlightEvent)
+        .where(
+            and_(
+                FlightEvent.device_id == device_id,
+                FlightEvent.event_type.in_(["landing", "return_home"]),
+                FlightEvent.timestamp >= start_naive,
+                FlightEvent.timestamp < end_naive,
+            )
+        )
+        .order_by(FlightEvent.timestamp.asc())
+    )
+    landings = list(landings_result.scalars().all())
+
+    total_hours = 0.0
+    pairs = min(len(takeoffs), len(landings))
+    for i in range(pairs):
+        duration = (landings[i].timestamp - takeoffs[i].timestamp).total_seconds()
+        if duration > 0:
+            total_hours += duration / 3600.0
+
+    return flight_count, round(total_hours, 4)
+
+
 async def get_utilization_stats(
     db: AsyncSession,
     device_id: int = None,
@@ -118,10 +174,12 @@ async def get_utilization_stats(
 
     stats = []
     for device in devices:
+        flight_count, total_flight_hours = await _compute_flight_stats(
+            db, device.id, start_date, end_date
+        )
+
         if hours_in_period > 0:
-            utilization_rate = round(
-                device.total_flight_hours / hours_in_period * 100, 2
-            )
+            utilization_rate = round(total_flight_hours / hours_in_period * 100, 2)
         else:
             utilization_rate = 0.0
 
@@ -129,8 +187,8 @@ async def get_utilization_stats(
             UtilizationStat(
                 device_id=device.id,
                 device_name=device.name,
-                total_flight_hours=device.total_flight_hours,
-                total_flight_count=device.total_flight_count,
+                total_flight_hours=total_flight_hours,
+                total_flight_count=flight_count,
                 utilization_rate=utilization_rate,
                 period_start=start_date,
                 period_end=end_date,

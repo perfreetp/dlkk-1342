@@ -17,30 +17,39 @@ async def create_task(task_in: TaskCreate, db: AsyncSession = Depends(get_db)):
 async def list_tasks(
     status: str = Query(None),
     task_type: str = Query(None),
-    page: int = Query(1),
-    page_size: int = Query(20),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1),
     db: AsyncSession = Depends(get_db),
 ):
-    total, items = await task_service.list_tasks(db, status=status, task_type=task_type, page=page, page_size=page_size)
+    items, total = await task_service.list_tasks(db, status=status, task_type=task_type, page=page, page_size=page_size)
     return {"total": total, "page": page, "page_size": page_size, "items": items}
 
 
 @router.get("/{task_id}", response_model=TaskOut)
 async def get_task(task_id: int, db: AsyncSession = Depends(get_db)):
-    return await task_service.get_task(db, task_id)
+    task = await task_service.get_task(db, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
 
 
 @router.put("/{task_id}", response_model=TaskOut)
 async def update_task(task_id: int, task_in: TaskUpdate, db: AsyncSession = Depends(get_db)):
-    return await task_service.update_task(db, task_id, task_in)
+    task = await task_service.update_task(db, task_id, task_in)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
 
 
 @router.post("/{task_id}/cancel", response_model=TaskOut)
 async def cancel_task(task_id: int, db: AsyncSession = Depends(get_db)):
     try:
-        return await task_service.cancel_task(db, task_id)
+        task = await task_service.cancel_task(db, task_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
 
 
 @router.post("/merge", response_model=TaskOut)
@@ -55,4 +64,7 @@ async def assign_task(
     drone_id: int = Query(...),
     db: AsyncSession = Depends(get_db),
 ):
-    return await task_service.assign_pilot_and_drone(db, task_id, pilot_id=pilot_id, drone_id=drone_id)
+    task = await task_service.assign_pilot_and_drone(db, task_id, pilot_id=pilot_id, drone_id=drone_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
